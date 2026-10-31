@@ -1,5 +1,5 @@
 import { Transaction, Customer, Product } from '../db/models.js';
-import { getMerchantId } from '../db/helpers.js';
+import type { Types } from 'mongoose';
 
 interface Opportunity {
   type: string;
@@ -13,8 +13,7 @@ interface Opportunity {
   estimatedProfit: number;
 }
 
-async function detectDecliningTimeslots(): Promise<Opportunity[]> {
-  const merchantId = await getMerchantId();
+async function detectDecliningTimeslots(merchantId: Types.ObjectId): Promise<Opportunity[]> {
   const now = Date.now();
   const fourWeeksAgo = new Date(now - 28 * 86400000);
   const eightWeeksAgo = new Date(now - 56 * 86400000);
@@ -75,8 +74,7 @@ async function detectDecliningTimeslots(): Promise<Opportunity[]> {
   return opportunities;
 }
 
-async function detectInactiveCustomers(): Promise<Opportunity[]> {
-  const merchantId = await getMerchantId();
+async function detectInactiveCustomers(merchantId: Types.ObjectId): Promise<Opportunity[]> {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
 
   const inactiveCustomers = await Customer.find({
@@ -110,8 +108,7 @@ async function detectInactiveCustomers(): Promise<Opportunity[]> {
   }];
 }
 
-async function detectUnderperformingProducts(): Promise<Opportunity[]> {
-  const merchantId = await getMerchantId();
+async function detectUnderperformingProducts(merchantId: Types.ObjectId): Promise<Opportunity[]> {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
 
   const txns = await Transaction.find({ merchantId, timestamp: { $gte: thirtyDaysAgo } }).lean();
@@ -166,8 +163,7 @@ async function detectUnderperformingProducts(): Promise<Opportunity[]> {
   return opportunities.slice(0, 2);
 }
 
-async function detectAovOpportunity(): Promise<Opportunity[]> {
-  const merchantId = await getMerchantId();
+async function detectAovOpportunity(merchantId: Types.ObjectId): Promise<Opportunity[]> {
   const fourWeeksAgo = new Date(Date.now() - 28 * 86400000);
   const eightWeeksAgo = new Date(Date.now() - 56 * 86400000);
 
@@ -206,12 +202,12 @@ async function detectAovOpportunity(): Promise<Opportunity[]> {
   return [];
 }
 
-export async function runOpportunityDetection(): Promise<Opportunity[]> {
+export async function runOpportunityDetection(merchantId: Types.ObjectId): Promise<Opportunity[]> {
   const [timeslots, inactive, products, aov] = await Promise.all([
-    detectDecliningTimeslots(),
-    detectInactiveCustomers(),
-    detectUnderperformingProducts(),
-    detectAovOpportunity(),
+    detectDecliningTimeslots(merchantId),
+    detectInactiveCustomers(merchantId),
+    detectUnderperformingProducts(merchantId),
+    detectAovOpportunity(merchantId),
   ]);
 
   return [...timeslots, ...inactive, ...products, ...aov].sort((a, b) => {

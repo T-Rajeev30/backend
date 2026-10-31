@@ -2,7 +2,6 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { config } from 'dotenv';
 import { connectDB } from './db/connection.js';
-import { extractMerchantId } from './db/helpers.js';
 import { dashboardRoutes } from './routes/dashboard.js';
 import { opportunityRoutes } from './routes/opportunities.js';
 import { campaignRoutes } from './routes/campaigns.js';
@@ -13,6 +12,12 @@ import { insightsRoutes } from './routes/insights.js';
 import { operationsRoutes } from './routes/operations.js';
 import { customersRoutes } from './routes/customers.js';
 import { opsRoutes } from './routes/ops.js';
+import { merchantRoutes } from './routes/merchants.js';
+import { authRoutes } from './routes/auth.js';
+import { demoCallRoutes, telephonyWebhookRoutes } from './routes/demo-call.js';
+import { registerSecurityHooks } from './security.js';
+import { registerVoiceWebSocket } from './services/voice-stream.js';
+import { registerExotelMediaWebSocket } from './services/telephony/exotel-media-stream.js';
 
 config();
 
@@ -27,11 +32,17 @@ const corsOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
 
 await app.register(cors, {
   origin: corsOrigins,
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'x-merchant-id'],
+  allowedHeaders: ['Content-Type', 'x-merchant-id', 'x-csrf-token'],
 });
 
+registerSecurityHooks(app, corsOrigins);
+registerVoiceWebSocket(app, corsOrigins);
+registerExotelMediaWebSocket(app);
+
 // Register routes
+app.register(authRoutes, { prefix: '/api/auth' });
 app.register(dashboardRoutes, { prefix: '/api/dashboard' });
 app.register(opportunityRoutes, { prefix: '/api/opportunities' });
 app.register(campaignRoutes, { prefix: '/api/campaigns' });
@@ -42,20 +53,18 @@ app.register(insightsRoutes, { prefix: '/api/insights' });
 app.register(operationsRoutes, { prefix: '/api/operations' });
 app.register(customersRoutes, { prefix: '/api/customers' });
 app.register(opsRoutes, { prefix: '/api/ops' });
+app.register(merchantRoutes, { prefix: '/api/merchants' });
+app.register(demoCallRoutes, { prefix: '/api/campaigns' });
+app.register(telephonyWebhookRoutes, { prefix: '/api/telephony' });
 
 app.get('/api/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
-
-// Merchant list for switcher
-app.get('/api/merchants', async () => {
-  const { Merchant } = await import('./db/models.js');
-  const merchants = await Merchant.find().sort({ createdAt: 1 }).lean();
-  return { merchants: merchants.map((m) => ({ id: m._id, name: m.name, businessType: m.businessType, city: m.city })) };
-});
 
 // Global error handler — return error message in response for debugging
 app.setErrorHandler((error, _request, reply) => {
   app.log.error(error);
-  reply.status(500).send({ error: error.message });
+  const statusCode = Number((error as Error & { statusCode?: number }).statusCode) || 500;
+  const message = statusCode < 500 ? error.message : 'Internal server error';
+  reply.status(statusCode).send({ error: message });
 });
 
 const port = parseInt(process.env.PORT || '3001');

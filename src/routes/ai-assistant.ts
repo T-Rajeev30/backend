@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { chatWithAssistant } from '../services/ai-service.js';
 import { translateObject } from '../services/translation-service.js';
 import { isSupportedLanguage } from '../services/sarvam-client.js';
+import { getRequestMerchantId } from '../db/helpers.js';
 
 const chatSchema = z.object({
   message: z.string().min(1),
@@ -25,7 +26,8 @@ export async function aiAssistantRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: parsed.error.issues });
     }
     const { message, language, history } = parsed.data;
-    const result = await chatWithAssistant(message, language || 'en-IN', history || []);
+    const merchantId = await getRequestMerchantId(req);
+    const result = await chatWithAssistant(message, merchantId, language || 'en-IN', history || []);
     return result;
   });
 

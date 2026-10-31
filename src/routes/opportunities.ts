@@ -1,22 +1,20 @@
 import { FastifyInstance } from 'fastify';
 import { AiRecommendation, Campaign } from '../db/models.js';
-import { getMerchantId } from '../db/helpers.js';
+import { getRequestMerchantId } from '../db/helpers.js';
 import { runOpportunityDetection } from '../services/opportunity-engine.js';
 import { generateRecommendation } from '../services/ai-service.js';
 
 export async function opportunityRoutes(app: FastifyInstance) {
 
-  // GET /api/opportunities/detect — run opportunity detection engine
-  app.get('/detect', async () => {
-    const merchantId = await getMerchantId();
-    const opportunities = await runOpportunityDetection();
+  // POST /api/opportunities/detect — detect/update actionable opportunities.
+  app.post('/detect', async (req) => {
+    const merchantId = await getRequestMerchantId(req);
+    const opportunities = await runOpportunityDetection(merchantId);
 
-    const saved = await Promise.all(
-      opportunities.map((opp) =>
-        AiRecommendation.create({
-          merchantId,
-          opportunityType: opp.type,
-          title: opp.title,
+    const saved = await Promise.all(opportunities.map((opp) =>
+      AiRecommendation.findOneAndUpdate(
+        { merchantId, opportunityType: opp.type, title: opp.title, status: 'new' },
+        { $set: {
           description: opp.description,
           reasoning: opp.reasoning,
           severity: opp.severity,
@@ -24,16 +22,17 @@ export async function opportunityRoutes(app: FastifyInstance) {
           suggestedAction: opp.suggestedAction,
           estimatedCost: opp.estimatedCost,
           estimatedProfit: opp.estimatedProfit,
-        })
-      )
-    );
+        } },
+        { new: true, upsert: true, setDefaultsOnInsert: true },
+      ),
+    ));
 
     return { opportunities: saved };
   });
 
   // GET /api/opportunities — list all detected opportunities
-  app.get('/', async () => {
-    const merchantId = await getMerchantId();
+  app.get('/', async (req) => {
+    const merchantId = await getRequestMerchantId(req);
     const recommendations = await AiRecommendation.find({ merchantId })
       .sort({ createdAt: -1 })
       .lean();
@@ -42,14 +41,19 @@ export async function opportunityRoutes(app: FastifyInstance) {
 
   // POST /api/opportunities/:id/recommend — generate AI campaign recommendation
   app.post<{ Params: { id: string } }>('/:id/recommend', async (req) => {
-    const rec = await AiRecommendation.findById(req.params.id).lean();
-    if (!rec) throw new Error('Recommendation not found');
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) {
+      throw Object.assign(new Error('Invalid opportunity ID'), { statusCode: 400 });
+    }
+    const merchantId = await getRequestMerchantId(req);
+    const rec = await AiRecommendation.findOne({ _id: req.params.id, merchantId }).lean();
+    if (!rec) throw Object.assign(new Error('Recommendation not found'), { statusCode: 404 });
 
     const suggestion = await generateRecommendation({
       type: rec.opportunityType,
       title: rec.title,
       description: rec.description,
       metrics: rec.metrics,
+      merchantId,
     });
 
     const campaign = await Campaign.create({
@@ -60,6 +64,7 @@ export async function opportunityRoutes(app: FastifyInstance) {
       type: suggestion.type,
       status: 'pending',
       targetSegment: suggestion.targetSegment,
+      channel: 'message',
       startDate: new Date(),
       endDate: new Date(Date.now() + (suggestion.durationDays || 14) * 86400000),
       timeSlotStart: suggestion.timeSlotStart,
@@ -70,7 +75,7 @@ export async function opportunityRoutes(app: FastifyInstance) {
       estimatedProfit: rec.estimatedProfit,
     });
 
-    await AiRecommendation.findByIdAndUpdate(rec._id, { status: 'actioned' });
+    await AiRecommendation.findOneAndUpdate({ _id: rec._id, merchantId }, { status: 'actioned' });
 
     return {
       campaign,

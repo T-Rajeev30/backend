@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { isSupportedLanguage } from '../services/sarvam-client.js';
 import { transcribe, speak } from '../services/voice-service.js';
 import { chatWithAssistant } from '../services/ai-service.js';
+import { getRequestMerchantId } from '../db/helpers.js';
+import { runVoiceTool, voiceToolSchema } from '../services/voice-tools.js';
 
 const transcribeSchema = z.object({
   audioBase64: z.string().min(1),
@@ -24,6 +26,13 @@ const askSchema = z.object({
 const TEN_MB = 10 * 1024 * 1024;
 
 export async function voiceRoutes(app: FastifyInstance) {
+  app.post<{ Body: unknown }>('/tools', async (req, reply) => {
+    const parsed = voiceToolSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: parsed.error.issues });
+    const merchantId = await getRequestMerchantId(req);
+    return runVoiceTool(merchantId, parsed.data);
+  });
+
   app.post<{ Body: unknown }>('/transcribe', {
     config: {},
     bodyLimit: 15 * 1024 * 1024,
@@ -73,7 +82,8 @@ export async function voiceRoutes(app: FastifyInstance) {
       ? sttResult.languageCode
       : 'en-IN';
 
-    const chatResult = await chatWithAssistant(sttResult.transcript, detectedLang);
+    const merchantId = await getRequestMerchantId(req);
+    const chatResult = await chatWithAssistant(sttResult.transcript, merchantId, detectedLang);
 
     const ttsResult = await speak(chatResult.response, detectedLang);
 
@@ -81,6 +91,7 @@ export async function voiceRoutes(app: FastifyInstance) {
       transcript: sttResult.transcript,
       languageCode: sttResult.languageCode,
       response: chatResult.response,
+      dataUsed: chatResult.dataUsed,
       audioBase64: ttsResult.audioBase64,
       mimeType: ttsResult.mimeType,
     };

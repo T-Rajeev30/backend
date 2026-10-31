@@ -1,13 +1,12 @@
 import { z } from 'zod';
+import type { Types } from 'mongoose';
 import { Merchant, Transaction, Customer, Product, Campaign, CampaignResult } from '../db/models.js';
-import { getMerchantId } from '../db/helpers.js';
-import { getSarvam, sarvamChat } from './sarvam-client.js';
+import { getSarvam, sarvamChat, SARVAM_CHAT_MODEL } from './sarvam-client.js';
 
-async function getMerchantContext() {
-  const merchant = await Merchant.findOne({ name: 'Café Brew' }).lean();
+async function getMerchantContext(merchantId: Types.ObjectId) {
+  const merchant = await Merchant.findById(merchantId).lean();
   if (!merchant) return 'No merchant data available.';
 
-  const merchantId = merchant._id;
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
 
   const [txns, customers, products, campaigns] = await Promise.all([
@@ -69,9 +68,41 @@ ${Array.from(hourlyTxns.entries())
 RECENT CAMPAIGNS:
 ${campaigns.map((c) => {
   const r = resultMap.get(c._id.toString());
-  return `- ${c.name} (${c.status}): Cost ₹${c.actualCost || c.budgetAmount}, Profit ₹${c.actualProfit || c.estimatedProfit}${r ? `, ROI ${r.merchantRoi}%` : ''}`;
+  return r
+    ? `- ${c.name} (${c.status}, SIMULATED): Campaign cost ₹${r.totalCampaignCost}, incremental gross profit ₹${r.incrementalProfit}, ROI ${r.merchantRoi}%`
+    : `- ${c.name} (${c.status}, planned): Budget ₹${c.budgetAmount}`;
 }).join('\n') || 'No campaigns yet'}
 `.trim();
+}
+
+export async function* streamAssistantResponse(
+  message: string,
+  merchantId: Types.ObjectId,
+  language: string,
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  signal: AbortSignal,
+): AsyncGenerator<string> {
+  const context = await getMerchantContext(merchantId);
+  if (!getSarvam()) {
+    yield 'Sarvam is not configured. The live voice agent is unavailable; you can still use the text assistant.';
+    return;
+  }
+  const langName = language === 'hi-IN' ? 'Hindi' : language === 'kn-IN' ? 'Kannada' : 'English';
+  const system = `You are the Paytm Merchant Growth voice assistant. Speak briefly and naturally in ${langName}. The server has deterministic tools for sales, comparisons, gross profit, products, segments, campaign results, opportunities and settings. If the user asks for a metric, do not calculate or invent it; ask to use the matching data lookup. Only use facts from supplied context. Never approve a campaign, message customers, call customers, spend budget, or change settings. A campaign draft is not approved or delivered. Identify simulated outcomes as simulated. ${context}`;
+  const sarvam = getSarvam();
+  if (!sarvam) return;
+  const stream = await sarvam.chat.completions({
+    model: SARVAM_CHAT_MODEL,
+    messages: [{ role: 'system', content: system }, ...history.slice(-8), { role: 'user', content: message }],
+    temperature: 0.25,
+    max_tokens: 350,
+    stream: true,
+  }, { abortSignal: signal, maxRetries: 0 });
+  for await (const chunk of stream) {
+    if (signal.aborted) return;
+    const content = chunk.choices?.[0]?.delta?.content;
+    if (typeof content === 'string' && content) yield content.replace(/<think>[\s\S]*?<\/think>/g, '');
+  }
 }
 
 const recommendationSchema = z.object({
@@ -88,6 +119,7 @@ const recommendationSchema = z.object({
 });
 
 export async function generateRecommendation(opportunity: {
+  merchantId: Types.ObjectId;
   type: string;
   title: string;
   description: string;
@@ -108,7 +140,7 @@ export async function generateRecommendation(opportunity: {
 
   if (!getSarvam()) return fallback;
 
-  const context = await getMerchantContext();
+  const context = await getMerchantContext(opportunity.merchantId);
 
   const systemPrompt = `You are a business growth advisor for a Paytm merchant.
 HARD RULE: All financial numbers (ROI, incremental profit, campaign cost, revenue) are computed by the server, NOT by you. You must NEVER calculate, estimate, or invent any financial figures. You may only suggest campaign parameters (duration, time slots, discount percentage, target segment). Financial projections are handled separately by the campaign simulator.`;
@@ -165,14 +197,15 @@ Respond with ONLY a JSON object:
 
 export async function chatWithAssistant(
   message: string,
+  merchantId: Types.ObjectId,
   language = 'en-IN',
   history: Array<{ role: 'user' | 'assistant'; content: string }> = [],
 ) {
-  const context = await getMerchantContext();
+  const context = await getMerchantContext(merchantId);
 
   if (!getSarvam()) {
     return {
-      response: `Based on your business data, here's what I can share:\n\nYour café has been performing steadily with transactions across the day. I notice your afternoon slot (2-5 PM) has room for growth. Your loyal customer base is solid, but there are inactive customers worth re-engaging.\n\nFor a detailed AI-powered analysis, please configure your Sarvam API key.`,
+      response: `I can help review your selected merchant's business data. For a detailed AI-powered analysis, please configure the Sarvam API key.`,
       dataUsed: ['transactions', 'customers', 'products'],
     };
   }
@@ -181,7 +214,7 @@ export async function chatWithAssistant(
 
   const systemPrompt = `You are an AI business assistant for a Paytm merchant. Use the merchant's real business data to answer questions with specific insights and actionable advice.
 
-HARD RULE: All financial numbers (ROI, incremental profit, campaign cost, revenue) shown here come from deterministic server-side calculations. You must NEVER calculate, estimate, or invent any financial figures. You may only reference and explain the numbers provided in the merchant context below. Use ₹ for currency.
+HARD RULE: Never calculate, estimate, or invent financial figures. Only reference amounts provided in the merchant context. Label campaign outcomes as simulated; gross profit excludes fixed overhead and tax. Use ₹ for currency.
 
 Answer directly in ${langName} (use native script, not transliteration). Keep response under 200 words.
 

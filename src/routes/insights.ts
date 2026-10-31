@@ -1,13 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { Transaction, Product, Customer } from '../db/models.js';
-import { getMerchantId } from '../db/helpers.js';
+import { getRequestMerchantId } from '../db/helpers.js';
 import { sarvamChat } from '../services/sarvam-client.js';
 
 export async function insightsRoutes(app: FastifyInstance) {
 
   // GET /api/insights/briefing?language=en-IN
   app.get<{ Querystring: { language?: string } }>('/briefing', async (req) => {
-    const merchantId = await getMerchantId();
+    const merchantId = await getRequestMerchantId(req);
     const language = (req.query.language || 'en-IN') as string;
 
     const now = new Date();

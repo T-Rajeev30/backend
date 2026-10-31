@@ -1,17 +1,22 @@
-import { Campaign, Customer, CampaignTarget, CampaignResult } from '../db/models.js';
+import { Campaign, Customer, CampaignTarget, CampaignResult, Product } from '../db/models.js';
+import type { Types } from 'mongoose';
+import { calculateCampaignFinancials } from './campaign-financials.js';
 
 /**
- * Simulates campaign execution with control group methodology.
- * All financial calculations are deterministic — no LLM involvement.
+ * Simulates campaign outcomes with randomized treatment/control purchases.
+ * Calculations use catalog prices, catalog costs, and simulated campaign costs.
+ * No messaging provider is called and no customer is contacted.
  */
-export async function simulateCampaign(campaignId: string) {
-  const campaign = await Campaign.findById(campaignId).lean();
+export async function simulateCampaign(campaignId: string, merchantId: Types.ObjectId) {
+  const campaign = await Campaign.findOneAndUpdate(
+    { _id: campaignId, merchantId, status: 'approved' },
+    { status: 'running' },
+    { new: false },
+  ).lean();
 
-  if (!campaign || campaign.status !== 'approved') {
-    throw new Error('Campaign must be approved before simulation');
+  if (!campaign) {
+    throw Object.assign(new Error('Campaign not found or not approved for simulation'), { statusCode: 409 });
   }
-
-  await Campaign.findByIdAndUpdate(campaignId, { status: 'running' });
 
   const filter: Record<string, any> = { merchantId: campaign.merchantId, consentSms: true };
   if (campaign.targetSegment && campaign.targetSegment !== 'all') {
@@ -19,15 +24,16 @@ export async function simulateCampaign(campaignId: string) {
   }
 
   const customers = await Customer.find(filter).lean();
+  const products = await Product.find({ merchantId, isActive: true }).lean();
 
-  if (customers.length === 0) {
-    await Campaign.findByIdAndUpdate(campaignId, {
+  if (customers.length < 2 || products.length === 0) {
+    await Campaign.findOneAndUpdate({ _id: campaignId, merchantId }, {
       status: 'completed',
       actualCost: 0,
       actualRevenue: 0,
       actualProfit: 0,
     });
-    return { error: 'No eligible customers found' };
+    return { error: 'Simulation needs at least two consented customers and one active product' };
   }
 
   // Split into treatment (80%) and control (20%)
@@ -45,6 +51,8 @@ export async function simulateCampaign(campaignId: string) {
       responded: Math.random() < 0.35,
       purchased: false,
       spentAmount: null as number | null,
+      costAmount: null as number | null,
+      discountAmount: 0,
     })),
     ...controlGroup.map((c) => ({
       campaignId,
@@ -54,54 +62,59 @@ export async function simulateCampaign(campaignId: string) {
       responded: false,
       purchased: false,
       spentAmount: null as number | null,
+      costAmount: null as number | null,
+      discountAmount: 0,
     })),
   ];
 
-  const avgProductPrice = 200;
   const discountFactor = campaign.discountPercent ? (1 - campaign.discountPercent / 100) : 1;
 
   for (const target of targetRecords) {
     if (target.groupType === 'treatment' && target.responded) {
       target.purchased = Math.random() < 0.60;
       if (target.purchased) {
-        const items = Math.random() < 0.4 ? 2 : 1;
-        target.spentAmount = Math.round(avgProductPrice * items * discountFactor);
+        const product = products[Math.floor(Math.random() * products.length)];
+        const quantity = Math.random() < 0.4 ? 2 : 1;
+        const grossRevenue = product.price * quantity;
+        target.spentAmount = Math.round(grossRevenue * discountFactor);
+        target.costAmount = product.cost * quantity;
+        target.discountAmount = grossRevenue - (target.spentAmount || 0);
       }
     } else if (target.groupType === 'control') {
       target.purchased = Math.random() < 0.15;
       if (target.purchased) {
-        target.spentAmount = Math.round(avgProductPrice * (Math.random() < 0.2 ? 2 : 1));
+        const product = products[Math.floor(Math.random() * products.length)];
+        const quantity = Math.random() < 0.2 ? 2 : 1;
+        target.spentAmount = product.price * quantity;
+        target.costAmount = product.cost * quantity;
       }
     }
   }
 
   await CampaignTarget.insertMany(targetRecords);
 
-  // Deterministic calculation
   const treatmentTargets = targetRecords.filter((t) => t.groupType === 'treatment');
   const controlTargets = targetRecords.filter((t) => t.groupType === 'control');
 
   const treatmentPurchased = treatmentTargets.filter((t) => t.purchased);
   const controlPurchased = controlTargets.filter((t) => t.purchased);
 
-  const treatmentRevenue = treatmentPurchased.reduce((s, t) => s + (t.spentAmount || 0), 0);
-  const controlRevenue = controlPurchased.reduce((s, t) => s + (t.spentAmount || 0), 0);
-
-  const scaleFactor = treatmentTargets.length / controlTargets.length;
-  const scaledControlRevenue = controlRevenue * scaleFactor;
-  const incrementalRevenue = Math.round(treatmentRevenue - scaledControlRevenue);
-
-  const contactCost = treatmentTargets.filter((t) => t.contacted).length * 2;
-  const discountCost = campaign.discountPercent
-    ? Math.round(treatmentPurchased.reduce((s, t) => s + (t.spentAmount || 0), 0) * (campaign.discountPercent / 100) / discountFactor)
-    : 0;
-  const totalCampaignCost = contactCost + discountCost;
-
-  const grossMarginRate = 0.60;
-  const incrementalProfit = Math.round(incrementalRevenue * grossMarginRate - totalCampaignCost);
-  const merchantRoi = totalCampaignCost > 0
-    ? parseFloat(((incrementalProfit / totalCampaignCost) * 100).toFixed(1))
-    : 0;
+  const financials = calculateCampaignFinancials({
+    treatmentPurchases: treatmentPurchased.map((target) => ({
+      spentAmount: target.spentAmount || 0,
+      costAmount: target.costAmount || 0,
+      discountAmount: target.discountAmount || 0,
+    })),
+    controlPurchases: controlPurchased.map((target) => ({
+      spentAmount: target.spentAmount || 0,
+      costAmount: target.costAmount || 0,
+    })),
+    treatmentGroupSize: treatmentTargets.length,
+    controlGroupSize: controlTargets.length,
+    contactedCount: treatmentTargets.filter((t) => t.contacted).length,
+  });
+  const { treatmentRevenue, controlRevenue, treatmentGrossProfit, controlGrossProfit,
+    incrementalRevenue, totalCampaignCost, incrementalGrossProfit: incrementalProfit, merchantRoi } = financials;
 
   const result = await CampaignResult.create({
     campaignId,
@@ -114,16 +127,18 @@ export async function simulateCampaign(campaignId: string) {
     totalCampaignCost,
     treatmentRevenue,
     controlRevenue,
-    incrementalRevenue: Math.max(0, incrementalRevenue),
-    incrementalProfit: Math.max(0, incrementalProfit),
+    treatmentGrossProfit,
+    controlGrossProfit,
+    incrementalRevenue,
+    incrementalProfit,
     merchantRoi,
   });
 
-  await Campaign.findByIdAndUpdate(campaignId, {
+  await Campaign.findOneAndUpdate({ _id: campaignId, merchantId }, {
     status: 'completed',
     actualCost: totalCampaignCost,
     actualRevenue: treatmentRevenue,
-    actualProfit: Math.max(0, incrementalProfit),
+    actualProfit: incrementalProfit,
     completedAt: new Date(),
   });
 
@@ -139,9 +154,9 @@ export async function simulateCampaign(campaignId: string) {
       purchased: result.totalPurchased,
       treatmentRevenue,
       controlRevenue,
-      incrementalRevenue: Math.max(0, incrementalRevenue),
+      incrementalRevenue,
       totalCampaignCost,
-      incrementalProfit: Math.max(0, incrementalProfit),
+      incrementalProfit,
       merchantRoi,
       treatmentConversionRate: parseFloat(
         ((treatmentPurchased.length / treatmentTargets.length) * 100).toFixed(1)

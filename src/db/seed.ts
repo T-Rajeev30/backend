@@ -1,8 +1,8 @@
 import { config } from 'dotenv';
 config();
 
-import mongoose from 'mongoose';
-import { Merchant, Customer, Product, Transaction, Campaign, CampaignResult, CampaignTarget, AiRecommendation } from './models.js';
+import mongoose, { Types } from 'mongoose';
+import { Merchant, Customer, Product, Transaction } from './models.js';
 
 function randomBetween(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -103,53 +103,55 @@ async function main() {
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 15000 });
   console.log('Connected to MongoDB');
 
-  await Promise.all([
-    Merchant.deleteMany({}),
-    Customer.deleteMany({}),
-    Product.deleteMany({}),
-    Transaction.deleteMany({}),
-    Campaign.deleteMany({}),
-    CampaignResult.deleteMany({}),
-    CampaignTarget.deleteMany({}),
-    AiRecommendation.deleteMany({}),
-  ]);
-
   for (const mc of merchantConfigs) {
-    const merchant = await Merchant.create({
-      name: mc.name,
-      businessType: mc.businessType,
-      address: mc.address,
-      city: mc.city,
-      phone: mc.phone,
-      email: mc.email,
-    });
-
-    const products = await Product.insertMany(
-      mc.products.map((p) => ({ ...p, merchantId: merchant._id }))
+    const merchant = await Merchant.findOneAndUpdate(
+      { name: mc.name },
+      { $set: {
+        name: mc.name,
+        businessType: mc.businessType,
+        dataMode: 'simulated',
+        address: mc.address,
+        city: mc.city,
+        phone: mc.phone,
+        email: mc.email,
+      } },
+      { upsert: true, new: true },
     );
 
-    const customerDocs = [];
-    for (let i = 0; i < mc.customerCount; i++) {
-      const name = `${randomItem(firstNames)} ${String.fromCharCode(65 + randomBetween(0, 25))}.`;
-      const daysAgo = randomBetween(1, 180);
-      const firstVisitDaysAgo = randomBetween(daysAgo, 365);
-      const totalVisits = randomBetween(1, 60);
-      const segment = totalVisits > 30 ? 'loyal' : totalVisits > 10 ? 'regular' : daysAgo > 45 ? 'inactive' : 'new';
+    const products = await Promise.all(mc.products.map((p) => Product.findOneAndUpdate(
+      { merchantId: merchant._id, name: p.name },
+      { $set: { ...p, merchantId: merchant._id, isActive: true } },
+      { upsert: true, new: true },
+    )));
 
-      customerDocs.push({
-        merchantId: merchant._id,
-        name,
-        phone: `+91-${randomBetween(7000000000, 9999999999)}`,
-        email: i % 3 === 0 ? `${name.toLowerCase().replace(/[^a-z]/g, '')}@gmail.com` : undefined,
-        firstVisit: new Date(Date.now() - firstVisitDaysAgo * 86400000),
-        lastVisit: new Date(Date.now() - daysAgo * 86400000),
-        totalVisits,
-        totalSpent: totalVisits * randomFloat(100, 350),
-        segment,
-      });
+    let customers: Array<{ _id: Types.ObjectId }> = await Customer.find({ merchantId: merchant._id }).select('_id').lean();
+    if (customers.length === 0) {
+      const customerDocs = [];
+      for (let i = 0; i < mc.customerCount; i++) {
+        const name = `${randomItem(firstNames)} ${String.fromCharCode(65 + randomBetween(0, 25))}.`;
+        const daysAgo = randomBetween(1, 180);
+        const firstVisitDaysAgo = randomBetween(daysAgo, 365);
+        const totalVisits = randomBetween(1, 60);
+        const segment = totalVisits > 30 ? 'loyal' : totalVisits > 10 ? 'regular' : daysAgo > 45 ? 'inactive' : 'new';
+
+        customerDocs.push({
+          merchantId: merchant._id,
+          name,
+          phone: `+91-${randomBetween(7000000000, 9999999999)}`,
+          email: i % 3 === 0 ? `${name.toLowerCase().replace(/[^a-z]/g, '')}@gmail.com` : undefined,
+          firstVisit: new Date(Date.now() - firstVisitDaysAgo * 86400000),
+          lastVisit: new Date(Date.now() - daysAgo * 86400000),
+          totalVisits,
+          totalSpent: totalVisits * randomFloat(100, 350),
+          segment,
+          consentSms: true,
+        });
+      }
+      customers = await Customer.insertMany(customerDocs);
     }
-    const customers = await Customer.insertMany(customerDocs);
 
+    const existingTransactions = await Transaction.countDocuments({ merchantId: merchant._id });
+    if (existingTransactions === 0) {
     const now = new Date();
     const transactions: any[] = [];
 
@@ -221,8 +223,10 @@ async function main() {
     for (let i = 0; i < transactions.length; i += batchSize) {
       await Transaction.insertMany(transactions.slice(i, i + batchSize));
     }
+    }
 
-    console.log(`Seeded ${mc.name}: ${products.length} products, ${customers.length} customers, ${transactions.length} transactions`);
+    const transactionCount = await Transaction.countDocuments({ merchantId: merchant._id });
+    console.log(`Seeded simulated data for ${mc.name}: ${products.length} products, ${customers.length} customers, ${transactionCount} transactions`);
   }
 
   await mongoose.disconnect();

@@ -4,6 +4,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IMerchant extends Document {
   name: string;
   businessType: string;
+  dataMode: 'simulated' | 'live';
   address: string;
   city: string;
   phone: string;
@@ -13,6 +14,7 @@ export interface IMerchant extends Document {
 const MerchantSchema = new Schema<IMerchant>({
   name: { type: String, required: true },
   businessType: { type: String, required: true },
+  dataMode: { type: String, enum: ['simulated', 'live'], default: 'simulated', required: true },
   address: String,
   city: String,
   phone: String,
@@ -20,6 +22,50 @@ const MerchantSchema = new Schema<IMerchant>({
 }, { timestamps: true });
 
 export const Merchant = mongoose.model<IMerchant>('Merchant', MerchantSchema);
+
+export type MerchantRole = 'owner' | 'admin' | 'staff';
+export interface IAuthUser extends Document { email: string; passwordHash: string; disabled: boolean; }
+const AuthUserSchema = new Schema<IAuthUser>({
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  passwordHash: { type: String, required: true, select: false },
+  disabled: { type: Boolean, default: false },
+}, { timestamps: true });
+export const AuthUser = mongoose.model<IAuthUser>('AuthUser', AuthUserSchema);
+
+export interface IMerchantMembership extends Document {
+  userId: mongoose.Types.ObjectId; merchantId: mongoose.Types.ObjectId; role: MerchantRole;
+}
+const MerchantMembershipSchema = new Schema<IMerchantMembership>({
+  userId: { type: Schema.Types.ObjectId, ref: 'AuthUser', required: true, index: true },
+  merchantId: { type: Schema.Types.ObjectId, ref: 'Merchant', required: true, index: true },
+  role: { type: String, enum: ['owner', 'admin', 'staff'], required: true },
+}, { timestamps: true });
+MerchantMembershipSchema.index({ userId: 1, merchantId: 1 }, { unique: true });
+export const MerchantMembership = mongoose.model<IMerchantMembership>('MerchantMembership', MerchantMembershipSchema);
+
+export interface IAuthSession extends Document {
+  userId: mongoose.Types.ObjectId; tokenHash: string; csrfHash: string; expiresAt: Date;
+}
+const AuthSessionSchema = new Schema<IAuthSession>({
+  userId: { type: Schema.Types.ObjectId, ref: 'AuthUser', required: true, index: true },
+  tokenHash: { type: String, required: true, unique: true },
+  csrfHash: { type: String, required: true },
+  expiresAt: { type: Date, required: true, index: { expires: 0 } },
+}, { timestamps: true });
+export const AuthSession = mongoose.model<IAuthSession>('AuthSession', AuthSessionSchema);
+
+export interface IRegistrationInvite extends Document {
+  email: string; merchantId: mongoose.Types.ObjectId; role: MerchantRole; tokenHash: string; expiresAt: Date; usedAt?: Date;
+}
+const RegistrationInviteSchema = new Schema<IRegistrationInvite>({
+  email: { type: String, required: true, lowercase: true, trim: true },
+  merchantId: { type: Schema.Types.ObjectId, ref: 'Merchant', required: true },
+  role: { type: String, enum: ['admin', 'staff'], required: true },
+  tokenHash: { type: String, required: true, unique: true },
+  expiresAt: { type: Date, required: true, index: { expires: 0 } },
+  usedAt: Date,
+}, { timestamps: true });
+export const RegistrationInvite = mongoose.model<IRegistrationInvite>('RegistrationInvite', RegistrationInviteSchema);
 
 // ── Customer ──
 export interface ICustomer extends Document {
@@ -110,6 +156,10 @@ export interface ICampaign extends Document {
   type: string;
   status: 'pending' | 'approved' | 'running' | 'completed' | 'rejected';
   targetSegment: string;
+  channel: 'message' | 'voice';
+  isDemoCall?: boolean;
+  voiceMessage?: string;
+  voiceLanguage?: string;
   startDate: Date;
   endDate: Date;
   timeSlotStart?: number;
@@ -117,7 +167,7 @@ export interface ICampaign extends Document {
   daysOfWeek?: string;
   budgetAmount: number;
   discountPercent?: number;
-  estimatedProfit: number;
+  estimatedProfit?: number;
   actualCost?: number;
   actualRevenue?: number;
   actualProfit?: number;
@@ -133,6 +183,10 @@ const CampaignSchema = new Schema<ICampaign>({
   type: String,
   status: { type: String, enum: ['pending', 'approved', 'running', 'completed', 'rejected'], default: 'pending' },
   targetSegment: String,
+  channel: { type: String, enum: ['message', 'voice'], default: 'message' },
+  isDemoCall: { type: Boolean, default: false },
+  voiceMessage: String,
+  voiceLanguage: String,
   startDate: Date,
   endDate: Date,
   timeSlotStart: Number,
@@ -140,7 +194,7 @@ const CampaignSchema = new Schema<ICampaign>({
   daysOfWeek: String,
   budgetAmount: { type: Number, required: true },
   discountPercent: Number,
-  estimatedProfit: { type: Number, required: true },
+  estimatedProfit: Number,
   actualCost: Number,
   actualRevenue: Number,
   actualProfit: Number,
@@ -159,6 +213,8 @@ export interface ICampaignTarget extends Document {
   responded: boolean;
   purchased: boolean;
   spentAmount?: number;
+  costAmount?: number;
+  discountAmount?: number;
 }
 
 const CampaignTargetSchema = new Schema<ICampaignTarget>({
@@ -169,6 +225,8 @@ const CampaignTargetSchema = new Schema<ICampaignTarget>({
   responded: { type: Boolean, default: false },
   purchased: { type: Boolean, default: false },
   spentAmount: Number,
+  costAmount: Number,
+  discountAmount: Number,
 });
 
 export const CampaignTarget = mongoose.model<ICampaignTarget>('CampaignTarget', CampaignTargetSchema);
@@ -185,6 +243,8 @@ export interface ICampaignResult extends Document {
   totalCampaignCost: number;
   treatmentRevenue: number;
   controlRevenue: number;
+  treatmentGrossProfit?: number;
+  controlGrossProfit?: number;
   incrementalRevenue: number;
   incrementalProfit: number;
   merchantRoi: number;
@@ -202,6 +262,8 @@ const CampaignResultSchema = new Schema<ICampaignResult>({
   totalCampaignCost: Number,
   treatmentRevenue: Number,
   controlRevenue: Number,
+  treatmentGrossProfit: Number,
+  controlGrossProfit: Number,
   incrementalRevenue: Number,
   incrementalProfit: Number,
   merchantRoi: Number,
@@ -240,3 +302,72 @@ const AiRecommendationSchema = new Schema<IAiRecommendation>({
 }, { timestamps: true });
 
 export const AiRecommendation = mongoose.model<IAiRecommendation>('AiRecommendation', AiRecommendationSchema);
+
+// ── Demo Call ──
+// Lifecycle record for a single controlled outbound AI demo call. One record
+// per campaign (unique index) so a campaign can never place more than one call.
+export type DemoCallStatus =
+  | 'initiating' | 'queued' | 'ringing' | 'in-progress'
+  | 'completed' | 'failed' | 'busy' | 'no-answer' | 'rejected';
+
+export interface IDemoCallTranscriptLine {
+  role: 'assistant' | 'customer';
+  text: string;
+  at: Date;
+}
+
+export interface IDemoCall extends Document {
+  campaignId: mongoose.Types.ObjectId;
+  merchantId: mongoose.Types.ObjectId;
+  provider: string;
+  providerCallId?: string;
+  correlationId: string;
+  status: DemoCallStatus;
+  maskedPhone: string;
+  recipientName: string;
+  language: 'en-IN' | 'hi-IN';
+  streamSid?: string;
+  startedAt: Date;
+  answeredAt?: Date;
+  completedAt?: Date;
+  durationSec?: number;
+  outcome?: string;
+  consentConfirmedAt: Date;
+  transcript: IDemoCallTranscriptLine[];
+  lastError?: string;
+}
+
+const DemoCallSchema = new Schema<IDemoCall>({
+  campaignId: { type: Schema.Types.ObjectId, ref: 'Campaign', required: true, unique: true },
+  merchantId: { type: Schema.Types.ObjectId, ref: 'Merchant', required: true, index: true },
+  provider: { type: String, required: true },
+  providerCallId: String,
+  correlationId: { type: String, required: true, index: true },
+  status: {
+    type: String,
+    enum: ['initiating', 'queued', 'ringing', 'in-progress', 'completed', 'failed', 'busy', 'no-answer', 'rejected'],
+    default: 'initiating',
+    required: true,
+  },
+  maskedPhone: { type: String, required: true },
+  recipientName: { type: String, required: true },
+  language: { type: String, enum: ['en-IN', 'hi-IN'], default: 'en-IN' },
+  streamSid: String,
+  startedAt: { type: Date, default: Date.now },
+  answeredAt: Date,
+  completedAt: Date,
+  durationSec: Number,
+  outcome: String,
+  consentConfirmedAt: { type: Date, required: true },
+  transcript: {
+    type: [new Schema<IDemoCallTranscriptLine>({
+      role: { type: String, enum: ['assistant', 'customer'], required: true },
+      text: { type: String, required: true },
+      at: { type: Date, default: Date.now },
+    }, { _id: false })],
+    default: [],
+  },
+  lastError: String,
+}, { timestamps: true });
+
+export const DemoCall = mongoose.model<IDemoCall>('DemoCall', DemoCallSchema);

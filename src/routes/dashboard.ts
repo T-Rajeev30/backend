@@ -1,12 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { Transaction, Customer, Product } from '../db/models.js';
-import { getMerchantId } from '../db/helpers.js';
+import { getRequestMerchantId } from '../db/helpers.js';
 
 export async function dashboardRoutes(app: FastifyInstance) {
 
   // GET /api/dashboard/stats
-  app.get('/stats', async () => {
-    const merchantId = await getMerchantId();
+  app.get('/stats', async (req) => {
+    const merchantId = await getRequestMerchantId(req);
     const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
     const sixtyDaysAgo = new Date(Date.now() - 60 * 86400000);
 
@@ -47,7 +47,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
 
   // GET /api/dashboard/sales-chart
   app.get('/sales-chart', async (req) => {
-    const merchantId = await getMerchantId();
+    const merchantId = await getRequestMerchantId(req);
     const { period = 'daily' } = req.query as { period?: string };
     const daysBack = period === 'weekly' ? 56 : 30;
     const since = new Date(Date.now() - daysBack * 86400000);
@@ -92,8 +92,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
   });
 
   // GET /api/dashboard/hourly-distribution
-  app.get('/hourly-distribution', async () => {
-    const merchantId = await getMerchantId();
+  app.get('/hourly-distribution', async (req) => {
+    const merchantId = await getRequestMerchantId(req);
     const fourWeeksAgo = new Date(Date.now() - 28 * 86400000);
     const eightWeeksAgo = new Date(Date.now() - 56 * 86400000);
 
@@ -122,8 +122,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
   });
 
   // GET /api/dashboard/top-products
-  app.get('/top-products', async () => {
-    const merchantId = await getMerchantId();
+  app.get('/top-products', async (req) => {
+    const merchantId = await getRequestMerchantId(req);
     const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
 
     const txns = await Transaction.find({ merchantId, timestamp: { $gte: thirtyDaysAgo } }).lean();
@@ -148,10 +148,11 @@ export async function dashboardRoutes(app: FastifyInstance) {
   });
 
   // GET /api/dashboard/customer-segments
-  app.get('/customer-segments', async () => {
-    const merchantId = await getMerchantId();
+  app.get('/customer-segments', async (req) => {
+    const merchantId = await getRequestMerchantId(req);
     const customers = await Customer.find({ merchantId }).lean();
     const segments = { loyal: 0, regular: 0, inactive: 0, new: 0 };
+    if (customers.length === 0) return [];
     customers.forEach((c) => {
       segments[c.segment as keyof typeof segments] += 1;
     });

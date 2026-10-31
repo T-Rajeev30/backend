@@ -1,12 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { Transaction, Product } from '../db/models.js';
-import { getMerchantId } from '../db/helpers.js';
+import { getRequestMerchantId } from '../db/helpers.js';
 
 export async function operationsRoutes(app: FastifyInstance) {
 
   // GET /api/operations/forecast — predict tomorrow's demand by product and time slot
-  app.get('/forecast', async () => {
-    const merchantId = await getMerchantId();
+  app.get('/forecast', async (req) => {
+    const merchantId = await getRequestMerchantId(req);
     const now = new Date();
     const tomorrow = new Date(now.getTime() + 86400000);
     const tomorrowDow = tomorrow.getDay();

@@ -5,8 +5,11 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "test": "npm run build && node --test dist/services/campaign-financials.test.js dist/services/voice-agent.test.js dist/services/demo-call/demo-call.test.js dist/services/demo-call/demo-call-orchestration.test.js dist/security.test.js dist/routes/campaigns.tenant.test.js dist/routes/authz.integration.test.js",
     "start": "node dist/index.js",
     "seed": "tsx src/db/seed.ts",
+    "seed-sharma": "tsx src/db/seed-sharma.ts",
+    "create-demo-owner": "tsx src/db/create-demo-owner.ts",
     "smoke": "tsx src/smoke.ts"
   },
   "dependencies": {
@@ -15,6 +18,7 @@
     "fastify": "^4.28.0",
     "mongoose": "^8.8.0",
     "sarvamai": "^1.1.14",
+        "ws": "^8.22.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
